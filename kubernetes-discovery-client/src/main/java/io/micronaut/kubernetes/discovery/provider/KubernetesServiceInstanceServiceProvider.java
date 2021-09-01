@@ -15,21 +15,28 @@
  */
 package io.micronaut.kubernetes.discovery.provider;
 
+import io.kubernetes.client.common.KubernetesListObject;
 import io.kubernetes.client.common.KubernetesObject;
 import io.kubernetes.client.openapi.ApiException;
 import io.kubernetes.client.openapi.models.V1Service;
+import io.kubernetes.client.openapi.models.V1ServiceList;
 import io.kubernetes.client.openapi.models.V1ServicePort;
+import io.micronaut.context.annotation.Value;
 import io.micronaut.discovery.ServiceInstance;
 import io.micronaut.kubernetes.KubernetesConfiguration;
 import io.micronaut.kubernetes.client.reactor.CoreV1ApiReactorClient;
 import io.micronaut.kubernetes.discovery.KubernetesServiceConfiguration;
 import io.micronaut.kubernetes.discovery.AbstractKubernetesServiceInstanceProvider;
+import io.micronaut.kubernetes.discovery.InformerResourceCache;
+import io.micronaut.kubernetes.discovery.ServiceInstanceProviderInformerFactory;
 import io.micronaut.kubernetes.util.KubernetesUtils;
+import jakarta.inject.Inject;
 import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import jakarta.inject.Singleton;
+import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -55,10 +62,39 @@ public class KubernetesServiceInstanceServiceProvider extends AbstractKubernetes
     private final CoreV1ApiReactorClient client;
     private final KubernetesConfiguration.KubernetesDiscoveryConfiguration discoveryConfiguration;
 
+    private InformerResourceCache<V1Service> namespacedInformerResourceCacheEventHandler = null;
+
+    /**
+     * Creates kubernetes instance endpoint provider.
+     *
+     * @param client                                 client
+     * @param discoveryConfiguration                 discovery configuration
+     * @param serviceInstanceProviderInformerFactory service instance provider informer factory
+     * @param watchEnabled                           flag whether to enable watch or fetch resources on request
+     * @since 3.1
+     */
+    @Inject
     public KubernetesServiceInstanceServiceProvider(CoreV1ApiReactorClient client,
-                                                    KubernetesConfiguration.KubernetesDiscoveryConfiguration discoveryConfiguration) {
+                                                    KubernetesConfiguration.KubernetesDiscoveryConfiguration discoveryConfiguration,
+                                                    ServiceInstanceProviderInformerFactory serviceInstanceProviderInformerFactory,
+                                                    @Value("${kubernetes.client.discovery.mode-configuration.service.watch.enabled:true}") boolean watchEnabled) {
         this.client = client;
         this.discoveryConfiguration = discoveryConfiguration;
+        if (watchEnabled) {
+            this.namespacedInformerResourceCacheEventHandler = serviceInstanceProviderInformerFactory.createInformersFor(this);
+        }
+    }
+
+    /**
+     * Creates kubernetes instance service provider.
+     *
+     * @param client                 client
+     * @param discoveryConfiguration discovery configuration
+     * @deprecated use {@link KubernetesServiceInstanceServiceProvider#KubernetesServiceInstanceServiceProvider(CoreV1ApiReactorClient, KubernetesConfiguration.KubernetesDiscoveryConfiguration, ServiceInstanceProviderInformerFactory, boolean)}
+     */
+    public KubernetesServiceInstanceServiceProvider(CoreV1ApiReactorClient client,
+                                                    KubernetesConfiguration.KubernetesDiscoveryConfiguration discoveryConfiguration) {
+        this(client, discoveryConfiguration, null, false);
     }
 
     @Override
@@ -84,12 +120,21 @@ public class KubernetesServiceInstanceServiceProvider extends AbstractKubernetes
             globalFilter = f -> true;
         }
 
-        if (LOG.isTraceEnabled()) {
-            LOG.trace("Fetching Service {}", serviceConfiguration);
+        Mono<V1Service> v1ServiceMono;
+        if (namespacedInformerResourceCacheEventHandler != null) {
+            if (LOG.isTraceEnabled()) {
+                LOG.trace("Fetching Service from cache: {}", serviceConfiguration);
+            }
+            v1ServiceMono = namespacedInformerResourceCacheEventHandler.getResource(serviceName, serviceNamespace);
+        } else {
+            if (LOG.isTraceEnabled()) {
+                LOG.trace("Fetching Service from API: {}", serviceConfiguration);
+            }
+            v1ServiceMono = client.readNamespacedService(serviceName, serviceNamespace, null, null, null)
+                    .doOnError(ApiException.class, throwable -> LOG.error("Failed to read Service [" + serviceName + "] from namespace [" + serviceNamespace + "]: " + throwable.getResponseBody(), throwable));
         }
 
-        return client.readNamespacedService(serviceName, serviceNamespace, null, null, null)
-                .doOnError(ApiException.class, throwable -> LOG.error("Failed to read Service [" + serviceName + "] from namespace [" + serviceNamespace + "]: " + throwable.getResponseBody(), throwable))
+        return v1ServiceMono
                 .filter(globalFilter)
                 .filter(service ->
                         hasValidPortConfiguration(
@@ -142,5 +187,20 @@ public class KubernetesServiceInstanceServiceProvider extends AbstractKubernetes
             }
             return null;
         }
+    }
+
+    @Override
+    public Class<? extends KubernetesObject> getApiType() {
+        return V1Service.class;
+    }
+
+    @Override
+    public Class<? extends KubernetesListObject> getApiListType() {
+        return V1ServiceList.class;
+    }
+
+    @Override
+    public String getResorucePlural() {
+        return "services";
     }
 }

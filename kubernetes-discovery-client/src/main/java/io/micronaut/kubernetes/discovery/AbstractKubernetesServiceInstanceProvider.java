@@ -36,7 +36,7 @@ import java.util.stream.Collectors;
  * @author Pavol Gressa
  * @since 2.3
  */
-public abstract class AbstractKubernetesServiceInstanceProvider implements KubernetesServiceInstanceProvider {
+public abstract class  AbstractKubernetesServiceInstanceProvider implements KubernetesServiceInstanceProvider {
 
     public static final String SECURE_LABEL = "secure";
     protected static final Logger LOG = LoggerFactory.getLogger(AbstractKubernetesServiceInstanceProvider.class);
@@ -166,6 +166,5 @@ public abstract class AbstractKubernetesServiceInstanceProvider implements Kuber
             }
             return new PortBinder(endpointPort.getName(), endpointPort.getPort());
         }
-
     }
 }
